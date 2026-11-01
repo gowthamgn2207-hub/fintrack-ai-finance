@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FinTrack — AI Personal Finance Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{
+  --bg:#f3f6fc;--surface:#fff;--brand:#315fe8;--brand-light:#eaf0ff;
+  --text:#192541;--muted:#78839a;--green:#13865e;--red:#d84d58;--border:#e4e9f2;
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#10131c;--surface:#1a2032;--brand:#6a8cff;--brand-light:#202a45;
+  --text:#e7ebf5;--muted:#8d97b0;--border:#2a3250;
+}}
+:root[data-theme="dark"]{--bg:#10131c;--surface:#1a2032;--brand:#6a8cff;--brand-light:#202a45;--text:#e7ebf5;--muted:#8d97b0;--border:#2a3250;}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;font-family:Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100%}
+header{background:var(--surface);padding:14px 5%;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;top:0;padding-top:calc(14px + env(safe-area-inset-top,0px))}
+.brand{color:var(--brand);font-size:21px;font-weight:bold}
+.who{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.who img{width:26px;height:26px;border-radius:50%}
+nav{display:flex;flex-wrap:wrap;gap:4px;background:var(--surface);padding:8px 5%;border-bottom:1px solid var(--border);overflow-x:auto}
+nav button{background:none;border:0;padding:8px 12px;border-radius:8px;font-weight:bold;font-size:13px;color:var(--muted);cursor:pointer;white-space:nowrap}
+nav button.active{background:var(--brand-light);color:var(--brand)}
+main{max-width:980px;margin:22px auto;padding:0 18px 60px}
+h1{font-size:24px;margin:0 0 4px}
+.muted{color:var(--muted);font-size:13px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin:18px 0}
+.card,.panel{background:var(--surface);padding:18px;border-radius:12px;border:1px solid var(--border)}
+.value{font-size:23px;font-weight:bold;margin-top:8px}
+.green{color:var(--green)}.red{color:var(--red)}
+.layout{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+form{display:grid;gap:11px}
+label{font-size:12.5px;font-weight:bold}
+input,select{display:block;width:100%;margin-top:5px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text)}
+button.btn{display:inline-block;border:0;background:var(--brand);color:#fff;border-radius:8px;padding:10px 16px;cursor:pointer;font-weight:bold;font-size:13px}
+.btn.secondary{background:var(--brand-light);color:var(--brand)}
+.btn.danger{background:#fff0f0;color:#c33}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:10px 6px;border-bottom:1px solid var(--border)}
+.table-wrap{overflow-x:auto}
+.msg{background:var(--brand-light);padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:13px}
+.progress{background:var(--border);height:8px;border-radius:10px;overflow:hidden;margin:8px 0}
+.bar{background:var(--brand);height:100%}
+.tab{display:none}
+.tab.active{display:block}
+footer{text-align:center;padding:20px;color:var(--muted);font-size:11.5px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">₹ FinTrack</div>
+  <div class="who" id="whoBox">Loading…</div>
+</header>
+<nav id="navBar"></nav>
+<main id="appRoot">
+  <div class="panel">Starting up…</div>
+</main>
+<footer>AI-Based Personal Finance Management — prototype. Data is stored privately per signed-in Claude account.</footer>
+
+<script>
+const CATS_EXPENSE = ["Food","Travel","Shopping","Bills","Education","Entertainment","Healthcare","Housing","Other"];
+const PAYMENTS = ["Cash","UPI","Card","Bank Transfer","Other"];
+const RULES = {
+  Food:["food","lunch","dinner","breakfast","restaurant","swiggy","zomato","grocery","coffee"],
+  Travel:["bus","train","metro","uber","ola","petrol","fuel","taxi","auto"],
+  Shopping:["shopping","shirt","shoes","amazon","flipkart","dress"],
+  Bills:["electricity","water bill","recharge","internet","mobile bill","wifi"],
+  Education:["college","book","course","tuition","exam","stationery"],
+  Entertainment:["movie","cinema","netflix","game","music"],
+  Healthcare:["hospital","doctor","medicine","pharmacy","clinic"],
+  Housing:["rent","house","maintenance"]
+};
+function autoCategorize(desc, kind){
+  const t=(desc||"").toLowerCase();
+  if(kind==="income") return /salary|payroll|wage/.test(t) ? "Salary" : "Other";
+  for(const cat in RULES){ if(RULES[cat].some(w=>t.includes(w))) return cat; }
+  return "Other";
+}
+function monthStr(d){ return d.toISOString().slice(0,7); }
+function fmt(n){ return "₹"+(Number(n)||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+let db=null, user=null, uid=null, col=null, records=[], tab="dashboard";
+
+async function boot(){
+  user = await claude.use("user");
+  db = await claude.use("db");
+  const who = document.getElementById("whoBox");
+
+  if(!user || !db){
+    who.textContent = "";
+    document.getElementById("appRoot").innerHTML =
+      '<div class="panel"><h1>Sign-in required</h1><p class="muted">Open this page inside Claude, signed in, to use your private finance dashboard — data is stored per account, so there is no separate password to set up.</p></div>';
+    return;
+  }
+
+  uid = await user.id();
+  const me = await user.me();
+  if(!uid){
+    who.textContent = "";
+    document.getElementById("appRoot").innerHTML =
+      '<div class="panel"><h1>Sign-in required</h1><p class="muted">Sign in to Claude to save your own private data in this dashboard.</p></div>';
+    return;
+  }
+  who.innerHTML = '<img src="'+me.avatarUrl+'"><span>'+ (me.name||"You") +'</span>';
+  col = db.collection("data/users/"+uid);
+
+  buildNav();
+  await reload();
+  render();
+}
+
+function buildNav(){
+  const tabs=[["dashboard","Dashboard"],["transactions","Transactions"],["add","Add Entry"],["budgets","Budgets"],["insights","Forecast & Insights"]];
+  const nav=document.getElementById("navBar");
+  nav.innerHTML = tabs.map(([id,label])=>'<button data-tab="'+id+'">'+label+'</button>').join("");
+  nav.querySelectorAll("button").forEach(b=>b.onclick=()=>{tab=b.dataset.tab; render();});
+}
+
+async function reload(){
+  const snap = await col.get();
+  records = snap.docs.map(d=>({id:d.id, ...d.data()}));
+}
+
+function thisMonthTx(){
+  const m = monthStr(new Date());
+  return records.filter(r=>r.type==="tx" && (r.date||"").slice(0,7)===m);
+}
+
+function render(){
+  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("active", b.dataset.tab===tab));
+  const root = document.getElementById("appRoot");
+  if(tab==="dashboard") root.innerHTML = renderDashboard();
+  else if(tab==="transactions") root.innerHTML = renderTransactions();
+  else if(tab==="add") root.innerHTML = renderAdd();
+  else if(tab==="budgets") root.innerHTML = renderBudgets();
+  else root.innerHTML = renderInsights();
+  wireEvents();
+}
+
+function renderDashboard(){
+  const txs = thisMonthTx();
+  const income = txs.filter(t=>t.kind==="income").reduce((a,t)=>a+t.amount,0);
+  const expenses = txs.filter(t=>t.kind==="expense").reduce((a,t)=>a+t.amount,0);
+  const byCat = {};
+  txs.filter(t=>t.kind==="expense").forEach(t=>byCat[t.category]=(byCat[t.category]||0)+t.amount);
+  const forecast = baselineForecast();
+  const catRows = Object.entries(byCat).sort((a,b)=>b[1]-a[1])
+    .map(([c,a])=>'<p><b>'+c+'</b> — '+fmt(a)+'</p>').join("") || '<p class="muted">No expenses recorded this month.</p>';
+  return `<h1>Hello!</h1><p class="muted">Your summary for ${monthStr(new Date())}.</p>
+  <div class="cards">
+    <div class="card"><div class="muted">Monthly Income</div><div class="value green">${fmt(income)}</div></div>
+    <div class="card"><div class="muted">Monthly Expenses</div><div class="value red">${fmt(expenses)}</div></div>
+    <div class="card"><div class="muted">Remaining Cash Flow</div><div class="value">${fmt(income-expenses)}</div></div>
+    <div class="card"><div class="muted">Forecasted Next Month</div><div class="value">${fmt(forecast)}</div></div>
+  </div>
+  <div class="layout">
+    <section class="panel"><h2>Expense Categories</h2>${catRows}</section>
+    <section class="panel"><h2>Quick Actions</h2>
+      <p><button class="btn" data-go="add">Add Transaction</button></p>
+      <p><button class="btn secondary" data-go="budgets">Manage Budget</button></p>
+      <p><button class="btn secondary" data-go="insights">View Forecast</button></p>
+    </section>
+  </div>`;
+}
+
+function renderTransactions(){
+  const rows = records.filter(r=>r.type==="tx").sort((a,b)=>b.date.localeCompare(a.date));
+  const trs = rows.map(t=>`<tr><td>${t.date}</td><td>${t.kind}</td><td>${t.description||""}</td>
+    <td>${t.category}</td><td>${t.payment}</td><td>${fmt(t.amount)}</td>
+    <td><button class="btn danger" data-del="${t.id}">Delete</button></td></tr>`).join("");
+  return `<h1>Transactions</h1><p><button class="btn" data-go="add">+ Add Transaction</button></p>
+  <section class="panel"><div class="table-wrap"><table>
+  <tr><th>Date</th><th>Type</th><th>Description</th><th>Category</th><th>Payment</th><th>Amount</th><th></th></tr>
+  ${trs}</table></div>${rows.length?"":'<p class="muted">No transactions yet.</p>'}</section>`;
+}
+
+function renderAdd(){
+  const cats = CATS_EXPENSE.map(c=>`<option>${c}</option>`).join("");
+  const pays = PAYMENTS.map(p=>`<option>${p}</option>`).join("");
+  return `<section class="panel" style="max-width:600px;margin:auto"><h1>Add Transaction</h1>
+  <form id="addForm">
+    <label>Type<select name="kind"><option value="expense">Expense</option><option value="income">Income</option></select></label>
+    <label>Amount (₹)<input type="number" name="amount" min="0.01" step="0.01" required></label>
+    <label>Description<input name="description" placeholder="e.g. Lunch at restaurant"></label>
+    <label>Category<select name="category"><option>Auto-detect</option>${cats}</select></label>
+    <label>Payment Method<select name="payment">${pays}</select></label>
+    <label>Date<input type="date" name="tx_date" value="${new Date().toISOString().slice(0,10)}" required></label>
+    <button class="btn">Save Transaction</button>
+  </form></section>`;
+}
+
+function renderBudgets(){
+  const month = monthStr(new Date());
+  const budgets = records.filter(r=>r.type==="budget" && r.month===month);
+  const spent = {};
+  thisMonthTx().filter(t=>t.kind==="expense").forEach(t=>spent[t.category]=(spent[t.category]||0)+t.amount);
+  const rows = budgets.map(b=>{
+    const used = spent[b.category]||0;
+    const pct = b.amount ? Math.min(100, Math.round(used/b.amount*100)) : 0;
+    return `<p><b>${b.category}</b></p><p class="muted">Spent ${fmt(used)} of ${fmt(b.amount)}</p>
+      <div class="progress"><div class="bar" style="width:${pct}%"></div></div>
+      <p class="muted">Remaining: ${fmt(b.amount-used)}</p>`;
+  }).join("") || '<p class="muted">No budgets set for this month.</p>';
+  const cats = CATS_EXPENSE.map(c=>`<option>${c}</option>`).join("");
+  return `<h1>Budget Management</h1><div class="layout">
+  <section class="panel"><h2>Set Monthly Budget</h2>
+  <form id="budgetForm">
+    <label>Category<select name="category">${cats}</select></label>
+    <label>Budget Amount (₹)<input type="number" name="amount" min="0" step="0.01" required></label>
+    <button class="btn">Save Budget</button>
+  </form></section>
+  <section class="panel"><h2>Budget Progress — ${month}</h2>${rows}</section></div>`;
+}
+
+function baselineForecast(){
+  const byMonth={};
+  records.filter(r=>r.type==="tx" && r.kind==="expense").forEach(t=>{
+    const m=t.date.slice(0,7); byMonth[m]=(byMonth[m]||0)+t.amount;
+  });
+  const months = Object.keys(byMonth).sort().reverse().slice(0,3);
+  if(!months.length) return 0;
+  return Math.round((months.reduce((a,m)=>a+byMonth[m],0)/months.length)*100)/100;
+}
+
+function renderInsights(){
+  const forecast = baselineForecast();
+  const byMonth={};
+  records.filter(r=>r.type==="tx" && r.kind==="expense").forEach(t=>{
+    const m=t.date.slice(0,7); byMonth[m]=(byMonth[m]||0)+t.amount;
+  });
+  const months = Object.keys(byMonth).sort().reverse().slice(0,6);
+  const histRows = months.map(m=>`<tr><td>${m}</td><td>${fmt(byMonth[m])}</td></tr>`).join("")
+    || '<tr><td colspan="2" class="muted">No history yet.</td></tr>';
+
+  const month = monthStr(new Date());
+  const txs = thisMonthTx();
+  const totals={};
+  txs.filter(t=>t.kind==="expense").forEach(t=>totals[t.category]=(totals[t.category]||0)+t.amount);
+  const budgets = records.filter(r=>r.type==="budget" && r.month===month);
+  const messages=[];
+  const cats = Object.keys(totals);
+  if(cats.length){
+    const top = cats.reduce((a,b)=>totals[a]>totals[b]?a:b);
+    messages.push(`Your highest-spending category is ${top}: ${fmt(totals[top])}.`);
+  }
+  budgets.forEach(b=>{
+    const used = totals[b.category]||0;
+    if(b.amount>0 && used>=b.amount) messages.push(`You reached or exceeded your ${b.category} budget.`);
+    else if(b.amount>0 && used>=b.amount*0.8) messages.push(`You've used at least 80% of your ${b.category} budget.`);
+  });
+  if(!messages.length) messages.push("Add transactions and budgets to receive spending insights.");
+
+  return `<h1>Forecast & AI Insights</h1>
+  <div class="cards"><div class="card"><div class="muted">Estimated monthly expenses</div>
+  <div class="value">${fmt(forecast)}</div><p class="muted">Average of your latest available months.</p></div></div>
+  <section class="panel"><h2>Previous Monthly Expenses</h2><table><tr><th>Month</th><th>Total</th></tr>${histRows}</table></section>
+  <section class="panel"><h2>Insights</h2>${messages.map(m=>`<div class="msg">${m}</div>`).join("")}</section>
+  <p class="muted">Academic prototype: forecast is an average-based baseline, not a trained ML model. Insights are rule-based, not financial advice.</p>`;
+}
+
+function wireEvents(){
+  document.querySelectorAll("[data-go]").forEach(b=>b.onclick=()=>{tab=b.dataset.go; render();});
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{
+    await col.doc(b.dataset.del).delete();
+    await reload(); render();
+  });
+  const addForm = document.getElementById("addForm");
+  if(addForm) addForm.onsubmit = async(e)=>{
+    e.preventDefault();
+    const f = new FormData(addForm);
+    const kind = f.get("kind"), amount = parseFloat(f.get("amount"));
+    let category = f.get("category");
+    if(category==="Auto-detect") category = autoCategorize(f.get("description"), kind);
+    await col.add({
+      type:"tx", kind, amount, category,
+      description: f.get("description")||"",
+      payment: f.get("payment"), date: f.get("tx_date"),
+      createdAt: Date.now()
+    });
+    await reload(); tab="transactions"; render();
+  };
+  const budgetForm = document.getElementById("budgetForm");
+  if(budgetForm) budgetForm.onsubmit = async(e)=>{
+    e.preventDefault();
+    const f = new FormData(budgetForm);
+    const category = f.get("category"), amount = parseFloat(f.get("amount"));
+    const month = monthStr(new Date());
+    await col.doc("b_"+category+"_"+month).set({type:"budget", category, month, amount});
+    await reload(); render();
+  };
+}
+
+boot();
+</script>
+</body>
+</html>
